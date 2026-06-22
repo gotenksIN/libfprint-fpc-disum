@@ -1423,7 +1423,12 @@ gx_fp_probe (FpDevice *device)
     case 0x659A:
     case 0x6890:
     case 0x6984:
+    case 0x65BA:
       self->max_enroll_stage = 12;
+      break;
+
+    case 0x6515:
+      self->max_enroll_stage = 17;
       break;
 
     default:
@@ -1688,6 +1693,10 @@ static const FpIdEntry id_table[] = {
   { .vid = 0x27c6,  .pid = 0x689A,  },
   { .vid = 0x27c6,  .pid = 0x66A9,  },
   { .vid = 0x27c6,  .pid = 0x6984,  },
+  { .vid = 0x27c6,  .pid = 0x65BA,  },
+  { .vid = 0x27c6,  .pid = 0x6515,  },
+  { .vid = 0x27c6,  .pid = 0x66AC,  },
+  { .vid = 0x27c6,  .pid = 0x660A,  },
   { .vid = 0,  .pid = 0,  .driver_data = 0 },   /* terminating entry */
 };
 
