@@ -135,6 +135,7 @@ driver_sources = {
         'drivers/goodixmoc/goodix_proto.c',
     ),
     'fpcmoc' : files('drivers/fpcmoc/fpc.c'),
+    'fpc1022' : files('drivers/fpc1022/fpc1022.c'),
     'realtek' : files('drivers/realtek/realtek.c'),
     'focaltech_moc' : files('drivers/focaltech_moc/focaltech_moc.c'),
     'mafpmoc' : files('drivers/mafpmoc/mafpmoc.c'),

@@ -160,6 +160,9 @@ drivers_info = {
     'mafpmoc': {},
     'secugen': {},
 
+    # SIGFM driver (non-optional if OpenCV is available)
+    'fpc1022': { 'sigfm': true, 'endian_dependent': true, 'helper': ['openssl'], 'optional': not have_opencv },
+
     # SPI driver (non-optional if SPI is available)
     'elanspi': { 'spi': true, 'helper': ['udev'], 'optional': not have_spi },
 
@@ -302,6 +305,14 @@ foreach driver: drivers
 endforeach
 
 if default_drivers_are_enabled and supported_drivers != drivers
+    default_drivers_are_enabled = false
+endif
+
+# data/autosuspend.hwdb is generated from the drivers that are compiled in, and
+# the checked-in copy covers every driver enabled by default, SIGFM ones
+# included. Without OpenCV those drop out of default_drivers, so such a build
+# generates a smaller file and cannot be used to validate the checked-in copy.
+if not have_opencv
     default_drivers_are_enabled = false
 endif
 
