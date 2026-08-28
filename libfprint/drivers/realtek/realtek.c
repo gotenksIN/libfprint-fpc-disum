@@ -516,7 +516,7 @@ fp_check_duplicate_cb (FpiDeviceRealtek *self,
   if (in_status == FP_RTK_SUCCESS)
     {
       fpi_ssm_mark_failed (self->task_ssm,
-                           fpi_device_error_new_msg (FP_DEVICE_ERROR_PROTO,
+                           fpi_device_error_new_msg (FP_DEVICE_ERROR_DATA_DUPLICATE,
                                                      "Current fingerprint is duplicate!"));
     }
   else if (in_status == FP_RTK_MATCH_FAIL)
