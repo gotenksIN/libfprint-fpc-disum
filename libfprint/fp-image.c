@@ -65,6 +65,10 @@ fp_image_finalize (GObject *object)
   g_clear_pointer (&self->binarized, g_free);
   g_clear_pointer (&self->minutiae, g_ptr_array_unref);
 
+#ifdef HAVE_SIGFM
+  g_clear_pointer (&self->sigfm_info, sigfm_free_info);
+#endif
+
   G_OBJECT_CLASS (fp_image_parent_class)->finalize (object);
 }
 
@@ -165,10 +169,21 @@ typedef struct
   FpiImageFlags       flags;
   unsigned char      *image;
   gboolean            image_changed;
-} DetectMinutiaeNbisData;
+} DetectMinutiaeData;
+
+#ifdef HAVE_SIGFM
+typedef struct
+{
+  SigfmImgInfo      * sigfm_info;
+  guchar            * image;
+  gint                width;
+  gint                height;
+  GAsyncReadyCallback user_cb;
+} ExtractSigfmData;
+#endif
 
 static void
-fp_image_detect_minutiae_free (DetectMinutiaeNbisData *data)
+fp_image_detect_minutiae_free (DetectMinutiaeData *data)
 {
   g_clear_pointer (&data->minutiae, free_minutiae);
   g_clear_pointer (&data->binarized, g_free);
@@ -179,15 +194,45 @@ fp_image_detect_minutiae_free (DetectMinutiaeNbisData *data)
   g_free (data);
 }
 
-G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeNbisData, fp_image_detect_minutiae_free)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeData, fp_image_detect_minutiae_free)
 
+#ifdef HAVE_SIGFM
+static void
+fp_image_sigfm_extract_free (ExtractSigfmData * data)
+{
+  g_clear_pointer (&data->image, g_free);
+  g_clear_pointer (&data->sigfm_info, sigfm_free_info);
+  g_free (data);
+}
+
+static void
+fp_image_sigfm_extract_cb (GObject * source_object, GAsyncResult * res,
+                           gpointer user_data)
+{
+  GTask * task = G_TASK (res);
+  FpImage * image;
+  ExtractSigfmData * data = g_task_get_task_data (task);
+
+  if (!g_task_had_error (task))
+    {
+      image = FP_IMAGE (source_object);
+
+      g_clear_pointer (&image->data, g_free);
+      image->data = g_steal_pointer (&data->image);
+      image->sigfm_info = g_steal_pointer (&data->sigfm_info);
+    }
+
+  if (data->user_cb)
+    data->user_cb (source_object, res, user_data);
+}
+#endif
 
 static gboolean
 fp_image_detect_minutiae_nbis_finish (FpImage *self,
                                       GTask   *task,
                                       GError **error)
 {
-  g_autoptr(DetectMinutiaeNbisData) data = NULL;
+  g_autoptr(DetectMinutiaeData) data = NULL;
 
   data = g_task_propagate_pointer (task, error);
 
@@ -270,14 +315,48 @@ invert_colors (guint8 *data, gint width, gint height)
     data[i] = 0xff - data[i];
 }
 
+#ifdef HAVE_SIGFM
 static void
-fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
-                                           gpointer      source_object,
-                                           gpointer      task_data,
-                                           GCancellable *cancellable)
+fp_image_sigfm_extract_thread_func (GTask * task, void * src_obj,
+                                    void * task_data,
+                                    GCancellable * cancellable)
+{
+  ExtractSigfmData * data = task_data;
+  GTimer * timer = g_timer_new ();
+
+  data->sigfm_info = sigfm_extract (data->image, data->width, data->height);
+  g_timer_stop (timer);
+  fp_dbg ("sigfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
+  g_timer_destroy (timer);
+
+  if (!data->sigfm_info)
+    {
+      fp_err ("extract sigfm info failed");
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED, "SIGFM scan failed");
+      g_object_unref (task);
+      return;
+    }
+
+  if (sigfm_keypoints_count (data->sigfm_info) < 25)
+    {
+      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
+                               "No enough keypoints found");
+      g_object_unref (task);
+      return;
+    }
+  g_task_return_boolean (task, TRUE);
+  g_object_unref (task);
+}
+#endif
+
+static void
+fp_image_detect_minutiae_thread_func (GTask        *task,
+                                      gpointer      source_object,
+                                      gpointer      task_data,
+                                      GCancellable *cancellable)
 {
   g_autoptr(GTimer) timer = NULL;
-  g_autoptr(DetectMinutiaeNbisData) ret_data = NULL;
+  g_autoptr(DetectMinutiaeData) ret_data = NULL;
   g_autoptr(GTask) thread_task = g_steal_pointer (&task);
   g_autofree gint *direction_map = NULL;
   g_autofree gint *low_contrast_map = NULL;
@@ -300,7 +379,7 @@ fp_image_detect_minutiae_nbis_thread_func (GTask        *task,
   if (minutiae_flags != FPI_IMAGE_NONE)
     image = g_memdup2 (self->data, self->width * self->height);
 
-  ret_data = g_new0 (DetectMinutiaeNbisData, 1);
+  ret_data = g_new0 (DetectMinutiaeData, 1);
   ret_data->flags = minutiae_flags;
   ret_data->image = image;
   ret_data->image_changed = image != self->data;
@@ -448,6 +527,51 @@ fp_image_get_minutiae (FpImage *self)
   return self->minutiae;
 }
 
+#ifdef HAVE_SIGFM
+/**
+ * fp_image_get_sigfm_info:
+ * @self: A #FpImage
+ *
+ * Gets the SIGFM keypoints and descriptors for an image. This data must
+ * not be modified or freed. You need to first extract keypoints and
+ * descriptors using fp_image_extract_sigfm_info().
+ *
+ * Returns: (skip): SIGFM keypoints and descriptors
+ */
+SigfmImgInfo *
+fp_image_get_sigfm_info (FpImage * self)
+{
+  return self->sigfm_info;
+}
+
+/*
+ * fp_image_extract_sigfm_info:
+ *
+ * Extracts SIFT keypoints and descriptors from an image.
+ * Completion is handled via fp_image_detect_minutiae_finish().
+ */
+void
+fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
+                             GAsyncReadyCallback callback, gpointer user_data)
+{
+  GTask * task;
+  ExtractSigfmData * data = g_new0 (ExtractSigfmData, 1);
+
+  task = g_task_new (self, cancellable, fp_image_sigfm_extract_cb, user_data);
+  g_task_set_source_tag (task, fp_image_extract_sigfm_info);
+
+  data->image = g_malloc (self->width * self->height);
+  memcpy (data->image, self->data, self->width * self->height);
+  data->width = self->width;
+  data->height = self->height;
+  data->user_cb = callback;
+
+  g_task_set_task_data (task, data,
+                        (GDestroyNotify) fp_image_sigfm_extract_free);
+  g_task_run_in_thread (task, fp_image_sigfm_extract_thread_func);
+}
+#endif
+
 /**
  * fp_image_detect_minutiae:
  * @self: A #FpImage
@@ -481,7 +605,7 @@ fp_image_detect_minutiae (FpImage            *self,
     }
 
   g_task_run_in_thread (g_steal_pointer (&task),
-                        fp_image_detect_minutiae_nbis_thread_func);
+                        fp_image_detect_minutiae_thread_func);
 }
 
 /**
@@ -504,6 +628,12 @@ fp_image_detect_minutiae_finish (FpImage      *self,
 
   g_return_val_if_fail (FP_IS_IMAGE (self), FALSE);
   g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
+
+#ifdef HAVE_SIGFM
+  if (g_task_get_source_tag (G_TASK (result)) == fp_image_extract_sigfm_info)
+    return g_task_propagate_boolean (G_TASK (result), error);
+#endif
+
   g_return_val_if_fail (g_task_get_source_tag (G_TASK (result)) ==
                         fp_image_detect_minutiae, FALSE);
 

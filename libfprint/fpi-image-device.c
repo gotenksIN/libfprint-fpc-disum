@@ -17,6 +17,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <config.h>
+#include "fpi-print.h"
+#include "fpi-image.h"
 #define FP_COMPONENT "image_device"
 #include "fpi-log.h"
 
@@ -282,7 +285,7 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
   if (!error)
     {
       print = fp_print_new (device);
-      fpi_print_set_type (print, FPI_PRINT_NBIS);
+      fpi_print_set_type (print, priv->algorithm);
       if (!fpi_print_add_from_image (print, image, &error))
         {
           g_clear_object (&print);
@@ -333,7 +336,17 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
         {
           FpPrint *template = g_ptr_array_index (templates, i);
 
-          if (fpi_print_bz3_match (template, print, priv->bz3_threshold, &error) == FPI_MATCH_SUCCESS)
+          int match_result = FPI_MATCH_ERROR;
+          if (priv->algorithm == FPI_PRINT_NBIS)
+            match_result = fpi_print_bz3_match (template, print,
+                                                priv->score_threshold, &error);
+#ifdef HAVE_SIGFM
+          else if (priv->algorithm == FPI_PRINT_SIGFM)
+            match_result = fpi_print_sigfm_match (template, print,
+                                                  priv->score_threshold, &error);
+#endif
+
+          if (match_result == FPI_MATCH_SUCCESS)
             {
               result = template;
               break;
@@ -361,9 +374,9 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
 /* Private API */
 
 /**
- * fpi_image_device_set_bz3_threshold:
+ * fpi_image_device_set_score_threshold:
  * @self: a #FpImageDevice imaging fingerprint device
- * @bz3_threshold: BZ3 threshold to use
+ * @score_threshold: BZ3 threshold to use
  *
  * Dynamically adjust the bz3 threshold. This is only needed for drivers
  * that support devices with different properties. It should generally be
@@ -371,15 +384,15 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
  * callback.
  */
 void
-fpi_image_device_set_bz3_threshold (FpImageDevice *self,
-                                    gint           bz3_threshold)
+fpi_image_device_set_score_threshold (FpImageDevice *self,
+                                      gint           score_threshold)
 {
   FpImageDevicePrivate *priv = fp_image_device_get_instance_private (self);
 
   g_return_if_fail (FP_IS_IMAGE_DEVICE (self));
-  g_return_if_fail (bz3_threshold > 0);
+  g_return_if_fail (score_threshold > 0);
 
-  priv->bz3_threshold = bz3_threshold;
+  priv->score_threshold = score_threshold;
 }
 
 /**
@@ -483,12 +496,22 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
 
   priv->minutiae_scan_active = TRUE;
 
-  /* XXX: We also detect minutiae in capture mode, we solely do this
-   *      to normalize the image which will happen as a by-product. */
-  fp_image_detect_minutiae (image,
-                            fpi_device_get_cancellable (FP_DEVICE (self)),
-                            fpi_image_device_minutiae_detected,
-                            self);
+#ifdef HAVE_SIGFM
+  if (priv->algorithm == FPI_PRINT_SIGFM)
+    {
+      fp_image_extract_sigfm_info (image,
+                                   fpi_device_get_cancellable (FP_DEVICE (self)),
+                                   fpi_image_device_minutiae_detected, self);
+    }
+  else
+#endif
+  {
+    /* XXX: We also detect minutiae in capture mode, we solely do this
+     *      to normalize the image which will happen as a by-product. */
+    fp_image_detect_minutiae (image,
+                              fpi_device_get_cancellable (FP_DEVICE (self)),
+                              fpi_image_device_minutiae_detected, self);
+  }
 
   /* XXX: This is wrong if we add support for raw capture mode. */
   fp_image_device_change_state (self, FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_OFF);

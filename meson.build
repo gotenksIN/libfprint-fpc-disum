@@ -111,6 +111,18 @@ gobject_introspection = dependency('gobject-introspection-1.0', required: get_op
 # SPI
 have_spi = host_machine.system() == 'linux'
 
+# SIGFM (SIFT keypoint matching) needs OpenCV; drivers that select it are
+# optional in the same way SPI drivers are when SPI is unavailable.
+# Distributions differ in which major version they ship a .pc file for.
+opencv_dep = dependency('opencv4', required: false)
+if not opencv_dep.found()
+    opencv_dep = dependency('opencv5', required: false)
+endif
+have_opencv = opencv_dep.found()
+if have_opencv
+    libfprint_conf.set10('HAVE_SIGFM', true)
+endif
+
 # Drivers
 drivers = get_option('drivers').split(',')
 
@@ -182,6 +194,14 @@ if not have_spi
     foreach driver: drivers
         if drivers_info[driver].get('spi', false)
             error('SPI driver @0@ is not supported'.format(driver))
+        endif
+    endforeach
+endif
+
+if not have_opencv
+    foreach driver: drivers
+        if drivers_info[driver].get('sigfm', false)
+            error('SIGFM driver @0@ requires opencv4 or opencv5'.format(driver))
         endif
     endforeach
 endif
