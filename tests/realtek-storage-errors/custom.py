@@ -6,9 +6,11 @@
 # point of this test: before the fix it read freed memory, and the GError was
 # freed a second time when the GTask finalized.
 #
-# No enrollment is involved, so this needs no recorded finger presses: the print
-# below is a stored realtek print, serialized, whose template is deliberately
-# not on the device.
+# The print below is a stored realtek print, serialized, whose template is
+# deliberately not on the device.
+#
+# The same session then enrolls a finger and enrolls it again, checking that the
+# duplicate is reported as FP_DEVICE_ERROR_DATA_DUPLICATE rather than PROTO.
 
 import base64
 import traceback
@@ -62,6 +64,34 @@ else:
 del p
 print("delete attempt done")
 
+# Storage is still empty, so enrolling the same finger twice must report the
+# error class expected by fprintd.
+
+def enroll_progress(*args):
+    print('enroll progress: ' + str(args))
+
+template = FPrint.Print.new(d)
+
+print("enrolling")
+assert d.get_finger_status() == FPrint.FingerStatusFlags.NONE
+p = d.enroll_sync(template, None, enroll_progress, None)
+assert d.get_finger_status() == FPrint.FingerStatusFlags.NONE
+print("enroll done")
+
+print("enrolling duplicate")
+template = FPrint.Print.new(d)
+assert d.get_finger_status() == FPrint.FingerStatusFlags.NONE
+try:
+    d.enroll_sync(template, None, enroll_progress, None)
+except GLib.Error as error:
+    assert error.matches(FPrint.DeviceError.quark(),
+                         FPrint.DeviceError.DATA_DUPLICATE)
+else:
+    raise AssertionError("Duplicate enrollment unexpectedly succeeded")
+assert d.get_finger_status() == FPrint.FingerStatusFlags.NONE
+print("duplicate enrollment rejected")
+
+d.delete_print_sync(p)
 d.close_sync()
 
 del d
