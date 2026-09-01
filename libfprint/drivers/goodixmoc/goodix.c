@@ -1658,6 +1658,7 @@ fpi_device_goodixmoc_init (FpiDeviceGoodixMoc *self)
 static const FpIdEntry id_table[] = {
   { .vid = 0x27c6,  .pid = 0x5840,  },
   { .vid = 0x27c6,  .pid = 0x6014,  },
+  { .vid = 0x27c6,  .pid = 0x6082,  },
   { .vid = 0x27c6,  .pid = 0x6090,  },
   { .vid = 0x27c6,  .pid = 0x6092,  },
   { .vid = 0x27c6,  .pid = 0x6094,  },
