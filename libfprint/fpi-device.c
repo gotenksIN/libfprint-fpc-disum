@@ -2170,7 +2170,7 @@ fpi_device_verify_report (FpDevice      *device,
           g_object_ref (data->match);
 
           if (print &&
-              fpi_print_get_type (print) != FPI_PRINT_NBIS &&
+              fpi_print_get_type (print) == FPI_PRINT_RAW &&
               !fp_print_equal (print, data->match))
             {
               g_warning ("Driver reported a match providing a scanned print that is not matching it.");
@@ -2270,7 +2270,7 @@ fpi_device_identify_report (FpDevice *device,
     }
   else
     {
-      if (match && print && fpi_print_get_type (print) != FPI_PRINT_NBIS &&
+      if (match && print && fpi_print_get_type (print) == FPI_PRINT_RAW &&
           !g_ptr_array_find_with_equal_func (data->gallery, print,
                                              (GEqualFunc) fp_print_equal, NULL))
         {
