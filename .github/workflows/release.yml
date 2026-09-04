@@ -1,0 +1,106 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (defaults to selected ref)
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: ubuntu
+            image: ubuntu:26.04
+            script: build-deb.sh
+          - family: arch
+            image: archlinux:latest
+            script: build-arch.sh
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DISTRO_FAMILY: ${{ matrix.family }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set release tag
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ inputs.tag || '' }}"
+            if [[ -z "$tag" ]]; then
+              tag="${GITHUB_SHA::12}"
+            fi
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - name: Build native package
+        run: bash ".github/scripts/${{ matrix.script }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.family }}
+          path: artifacts
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set release tag
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="${{ inputs.tag || '' }}"
+            if [[ -z "$tag" ]]; then
+              tag="${GITHUB_SHA::12}"
+            fi
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Validate tag and collect artifacts
+        run: |
+          .github/scripts/collect-release.sh artifacts release
+          test -f release/SHA256SUMS
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "libfprint-fpc1022 $RELEASE_TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" release/* \
+            --repo "$GITHUB_REPOSITORY"

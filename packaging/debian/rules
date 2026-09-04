@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=meson
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-Ddrivers=all \
+		-Ddoc=false \
+		-Dinstalled-tests=false \
+		-Dudev_hwdb=enabled \
+		-Dudev_rules_dir=/usr/lib/udev/rules.d \
+		-Dudev_hwdb_dir=/usr/lib/udev/hwdb.d
+
+override_dh_auto_test:
+	meson test -C obj-$$(dpkg-architecture -qDEB_HOST_GNU_TYPE) --print-errorlogs \
+		--no-suite libfprint:data
+	meson test -C obj-$$(dpkg-architecture -qDEB_HOST_GNU_TYPE) --print-errorlogs \
+		udev-hwdb
