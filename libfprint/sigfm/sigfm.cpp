@@ -15,6 +15,8 @@
 #include "opencv2/core/types.hpp"
 #include "opencv2/features2d.hpp"
 #include <algorithm>
+#include <array>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -32,6 +34,8 @@ template<>
 struct serializer<SigfmImgInfo> : public std::true_type {
     static void serialize(const SigfmImgInfo& info, stream& out)
     {
+        if (info.descriptors.rows != static_cast<int>(info.keypoints.size()))
+            throw std::runtime_error{"keypoint and descriptor counts differ"};
         out << info.keypoints << info.descriptors;
     }
 };
@@ -42,6 +46,8 @@ struct deserializer<SigfmImgInfo> : public std::true_type {
     {
         SigfmImgInfo info;
         in >> info.keypoints >> info.descriptors;
+        if (info.descriptors.rows != static_cast<int>(info.keypoints.size()))
+            throw std::runtime_error{"keypoint and descriptor counts differ"};
         return info;
     }
 };
@@ -53,15 +59,10 @@ constexpr auto length_match = 0.05;
 constexpr auto angle_match = 0.05;
 constexpr auto min_match = 5;
 constexpr auto max_matches = std::size_t{176};
+constexpr auto max_angles = std::size_t{500};
 struct match {
     cv::Point2i p1;
     cv::Point2i p2;
-    match(cv::Point2i ip1, cv::Point2i ip2) : p1{ip1}, p2{ip2} {}
-    match() : p1{cv::Point2i(0, 0)}, p2{cv::Point2i(0, 0)} {}
-    bool operator==(const match& right) const
-    {
-        return std::tie(this->p1, this->p2) == std::tie(right.p1, right.p2);
-    }
     bool operator<(const match& right) const
     {
         return std::tie(this->p1.y, this->p1.x, this->p2.y, this->p2.x) <
@@ -71,11 +72,6 @@ struct match {
 struct angle {
     double cos;
     double sin;
-    match corr_matches[2];
-    angle(double cos_, double sin_, match m1, match m2)
-        : cos{cos_}, sin{sin_}, corr_matches{m1, m2}
-    {
-    }
 };
 } // namespace
 
@@ -85,37 +81,160 @@ int sigfm_keypoints_count(SigfmImgInfo* info) { return info->keypoints.size(); }
 
 namespace {
 constexpr unsigned char sigfm_blob_magic[4] = {'S', 'G', 'F', 'M'};
-constexpr unsigned char sigfm_blob_version = 1;
+constexpr unsigned char sigfm_blob_version_legacy = 1;
+constexpr unsigned char sigfm_blob_version = 2;
+constexpr std::size_t sigfm_keypoint_size = 7 * sizeof(guint32);
+constexpr std::size_t sigfm_blob_max_size =
+    5 + sizeof(guint64) + bin::MAX_KEYPOINTS * sigfm_keypoint_size +
+    3 * sizeof(guint32) +
+    bin::MAX_KEYPOINTS * bin::SIFT_DESCRIPTOR_COLS * sizeof(float);
+
+enum class legacy_byte_order {
+    little,
+    big,
+};
+
+template<typename T>
+T read_legacy_value(bin::stream& in, legacy_byte_order order)
+{
+    alignas(T) std::array<bin::byte, sizeof(T)> bytes{};
+    in.read(bytes.begin(), bytes.size());
+#if G_BYTE_ORDER == G_LITTLE_ENDIAN
+    if (order == legacy_byte_order::big)
+#else
+    if (order == legacy_byte_order::little)
+#endif
+        std::reverse(bytes.begin(), bytes.end());
+
+    T value;
+    std::memcpy(&value, bytes.data(), sizeof(value));
+    return value;
+}
+
+template<typename Size>
+SigfmImgInfo deserialize_legacy_v1(bin::stream& in, legacy_byte_order order)
+{
+    const auto count = read_legacy_value<Size>(in, order);
+    if (count > bin::MAX_KEYPOINTS || count > in.size())
+        throw std::runtime_error{"invalid legacy keypoint count"};
+
+    SigfmImgInfo info;
+    info.keypoints.reserve(static_cast<std::size_t>(count));
+    for (Size index = 0; index < count; index++) {
+        cv::KeyPoint point;
+        point.class_id = read_legacy_value<int>(in, order);
+        point.angle = read_legacy_value<float>(in, order);
+        point.octave = read_legacy_value<int>(in, order);
+        point.response = read_legacy_value<float>(in, order);
+        point.size = read_legacy_value<float>(in, order);
+        point.pt.x = read_legacy_value<float>(in, order);
+        point.pt.y = read_legacy_value<float>(in, order);
+        info.keypoints.emplace_back(std::move(point));
+    }
+
+    const auto type = read_legacy_value<gint32>(in, order);
+    const auto rows = read_legacy_value<gint32>(in, order);
+    const auto cols = read_legacy_value<gint32>(in, order);
+    if (rows == 0) {
+        if (!((type == 0 && cols == 0) ||
+              (type == CV_32F && cols == bin::SIFT_DESCRIPTOR_COLS)))
+            throw std::runtime_error{"invalid legacy empty descriptor matrix"};
+    } else {
+        if (rows < 0 || rows > static_cast<gint32>(bin::MAX_KEYPOINTS) ||
+            cols != bin::SIFT_DESCRIPTOR_COLS || type != CV_32F ||
+            static_cast<std::size_t>(rows) * cols * sizeof(float) > in.size())
+            throw std::runtime_error{"invalid legacy descriptor matrix"};
+
+        info.descriptors.create(rows, cols, type);
+        for (gint32 row = 0; row < rows; row++)
+            for (gint32 col = 0; col < cols; col++)
+                info.descriptors.at<float>(row, col) =
+                    read_legacy_value<float>(in, order);
+    }
+
+    if (info.descriptors.rows != static_cast<int>(info.keypoints.size()))
+        throw std::runtime_error{"legacy keypoint and descriptor counts differ"};
+    return info;
+}
+
+template<typename Size>
+std::unique_ptr<SigfmImgInfo>
+try_deserialize_legacy_v1(const unsigned char* begin, const unsigned char* end,
+                          legacy_byte_order order)
+{
+    try {
+        bin::stream in{begin, end};
+        auto info = std::make_unique<SigfmImgInfo>(
+            deserialize_legacy_v1<Size>(in, order));
+        if (in.size() != 0)
+            return nullptr;
+        return info;
+    } catch (const std::exception&) {
+        return nullptr;
+    }
+}
 } // namespace
 
 unsigned char* sigfm_serialize_binary(SigfmImgInfo* info, int* outlen)
 {
-    bin::stream s;
-    s << *info;
-    const int payload = s.size();
-    auto* out = static_cast<unsigned char*>(std::malloc(payload + 5));
-    if (!out) {
-        *outlen = 0;
+    if (!outlen)
+        return nullptr;
+
+    *outlen = 0;
+    try {
+        if (!info)
+            return nullptr;
+
+        bin::stream s;
+        s << *info;
+        if (s.size() > static_cast<std::size_t>(INT_MAX - 5))
+            return nullptr;
+
+        const auto payload = static_cast<int>(s.size());
+        auto* out = static_cast<unsigned char*>(std::malloc(payload + 5));
+        if (!out)
+            return nullptr;
+
+        std::memcpy(out, sigfm_blob_magic, 4);
+        out[4] = sigfm_blob_version;
+        std::memcpy(out + 5, s.data(), payload);
+        *outlen = payload + 5;
+        return out;
+    } catch (const std::exception&) {
         return nullptr;
     }
-    std::memcpy(out, sigfm_blob_magic, 4);
-    out[4] = sigfm_blob_version;
-    unsigned char* body = s.copy_buffer();
-    std::memcpy(out + 5, body, payload);
-    std::free(body);
-    *outlen = payload + 5;
-    return out;
 }
 
 SigfmImgInfo* sigfm_deserialize_binary(const unsigned char* bytes, int len)
 {
     try {
-        if (len < 5 || std::memcmp(bytes, sigfm_blob_magic, 4) != 0 ||
-            bytes[4] != sigfm_blob_version)
+        if (!bytes || len < 5 ||
+            static_cast<std::size_t>(len) > sigfm_blob_max_size ||
+            std::memcmp(bytes, sigfm_blob_magic, 4) != 0)
             return nullptr;
+
+        if (bytes[4] == sigfm_blob_version_legacy) {
+            auto info = try_deserialize_legacy_v1<guint64>(
+                bytes + 5, bytes + len, legacy_byte_order::little);
+            if (!info)
+                info = try_deserialize_legacy_v1<guint32>(
+                    bytes + 5, bytes + len, legacy_byte_order::little);
+            if (!info)
+                info = try_deserialize_legacy_v1<guint64>(
+                    bytes + 5, bytes + len, legacy_byte_order::big);
+            if (!info)
+                info = try_deserialize_legacy_v1<guint32>(
+                    bytes + 5, bytes + len, legacy_byte_order::big);
+            return info.release();
+        }
+        if (bytes[4] != sigfm_blob_version)
+            return nullptr;
+
         bin::stream s{bytes + 5, bytes + len};
         auto info = std::make_unique<SigfmImgInfo>();
         s >> *info;
+        if (s.size() != 0)
+            return nullptr;
         return info.release();
     }
     catch (const std::exception&) {
@@ -133,7 +252,8 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
         std::vector<cv::KeyPoint> pts;
 
         cv::Mat descs;
-        cv::SIFT::create()->detectAndCompute(img, roi, pts, descs);
+        cv::SIFT::create(static_cast<int>(bin::MAX_KEYPOINTS))
+            ->detectAndCompute(img, roi, pts, descs);
 
         auto* info = new SigfmImgInfo{pts, descs};
         return info;
@@ -145,6 +265,9 @@ SigfmImgInfo* sigfm_extract(const SigfmPix* pix, int width, int height)
 int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 {
     try {
+        if (frame->descriptors.empty() || enrolled->descriptors.empty())
+            return 0;
+
         std::vector<std::vector<cv::DMatch>> points;
         auto bfm = cv::BFMatcher::create();
         bfm->knnMatch(frame->descriptors, enrolled->descriptors, points, 2);
@@ -182,9 +305,12 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 
         std::vector<angle> angles;
         for (std::size_t j = 0; j < matches.size(); j++) {
-            match match_1 = matches[j];
+            if (angles.size() >= max_angles)
+                break;
+
+            const auto& match_1 = matches[j];
             for (std::size_t k = j + 1; k < matches.size(); k++) {
-                match match_2 = matches[k];
+                const auto& match_2 = matches[k];
 
                 int vec_1[2] = {match_1.p1.x - match_2.p1.x,
                                 match_1.p1.y - match_2.p1.y};
@@ -199,14 +325,17 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
                     length_match) {
 
                     double product = length_1 * length_2;
-                    angles.emplace_back(angle(
+                    angles.push_back({
                         M_PI / 2 +
                             asin((vec_1[0] * vec_2[0] + vec_1[1] * vec_2[1]) /
                                  product),
                         acos((vec_1[0] * vec_2[1] - vec_1[1] * vec_2[0]) /
                              product),
-                        match_1, match_2));
+                    });
                 }
+
+                if (angles.size() >= max_angles)
+                    break;
             }
         }
 
@@ -216,9 +345,9 @@ int sigfm_match_score(SigfmImgInfo* frame, SigfmImgInfo* enrolled)
 
         int count = 0;
         for (std::size_t j = 0; j < angles.size(); j++) {
-            angle angle_1 = angles[j];
+            const auto& angle_1 = angles[j];
             for (std::size_t k = j + 1; k < angles.size(); k++) {
-                angle angle_2 = angles[k];
+                const auto& angle_2 = angles[k];
 
                 if (1 - std::min(angle_1.sin, angle_2.sin) /
                                 std::max(angle_1.sin, angle_2.sin) <=

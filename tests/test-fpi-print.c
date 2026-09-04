@@ -202,6 +202,84 @@ test_sigfm_match_rejects_empty_probe (void)
 #endif
 }
 
+#ifdef HAVE_SIGFM
+static void
+write_legacy_uint32 (guchar   **cursor,
+                     guint32    value,
+                     gboolean   big_endian)
+{
+  value = big_endian ? GUINT32_TO_BE (value) : GUINT32_TO_LE (value);
+  memcpy (*cursor, &value, sizeof (value));
+  *cursor += sizeof (value);
+}
+
+static void
+write_legacy_float (guchar   **cursor,
+                    float      value,
+                    gboolean   big_endian)
+{
+  guint32 bits;
+
+  memcpy (&bits, &value, sizeof (bits));
+  write_legacy_uint32 (cursor, bits, big_endian);
+}
+
+static guchar *
+make_legacy_sigfm_blob (gsize      count_size,
+                        gboolean   big_endian,
+                        gboolean   empty,
+                        gboolean   canonical_empty,
+                        gsize     *len)
+{
+  gsize descriptor_size = empty ? 0 : 128 * sizeof (float);
+  gsize keypoint_size = empty ? 0 : 7 * sizeof (guint32);
+  guchar *blob;
+  guchar *cursor;
+
+  *len = 5 + count_size + keypoint_size + 3 * sizeof (guint32) + descriptor_size;
+  blob = g_malloc0 (*len);
+  memcpy (blob, "SGFM\1", 5);
+  cursor = blob + 5;
+
+  if (count_size == sizeof (guint64))
+    {
+      guint64 count = empty ? 0 : 1;
+
+      count = big_endian ? GUINT64_TO_BE (count) : GUINT64_TO_LE (count);
+      memcpy (cursor, &count, sizeof (count));
+      cursor += sizeof (count);
+    }
+  else
+    {
+      write_legacy_uint32 (&cursor, empty ? 0 : 1, big_endian);
+    }
+
+  if (!empty)
+    {
+      write_legacy_uint32 (&cursor, 7, big_endian);
+      write_legacy_float (&cursor, 45.5f, big_endian);
+      write_legacy_uint32 (&cursor, 2, big_endian);
+      write_legacy_float (&cursor, 0.75f, big_endian);
+      write_legacy_float (&cursor, 3.5f, big_endian);
+      write_legacy_float (&cursor, 10.25f, big_endian);
+      write_legacy_float (&cursor, 20.5f, big_endian);
+    }
+
+  write_legacy_uint32 (&cursor,
+                       empty && !canonical_empty ? 0 : 5,
+                       big_endian);
+  write_legacy_uint32 (&cursor, empty ? 0 : 1, big_endian);
+  write_legacy_uint32 (&cursor,
+                       empty && !canonical_empty ? 0 : 128,
+                       big_endian);
+  if (!empty)
+    for (guint32 col = 0; col < 128; col++)
+      write_legacy_float (&cursor, col + 0.5f, big_endian);
+
+  return blob;
+}
+#endif
+
 static void
 test_sigfm_blob_roundtrip_and_magic (void)
 {
@@ -212,16 +290,105 @@ test_sigfm_blob_roundtrip_and_magic (void)
   int len = 0;
   unsigned char *blob;
   SigfmImgInfo *back;
+  g_autofree unsigned char *malformed = NULL;
+  g_autofree unsigned char *trailing = NULL;
+  guint32 one = GUINT32_TO_LE (1);
+  g_autofree guchar *legacy = NULL;
+  g_autofree guchar *legacy_v2 = NULL;
+  gsize legacy_len;
+  int legacy_v2_len = 0;
 
   g_assert_nonnull (info);
   blob = sigfm_serialize_binary (info, &len);
   g_assert_cmpint (len, >, 5);
   g_assert_cmpmem (blob, 4, "SGFM", 4);
-  g_assert_cmpint (blob[4], ==, 1);
+  g_assert_cmpint (blob[4], ==, 2);
 
   back = sigfm_deserialize_binary (blob, len);
   g_assert_nonnull (back);
   sigfm_free_info (back);
+  g_assert_null (sigfm_deserialize_binary (blob, G_MAXINT));
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint64), FALSE, FALSE, FALSE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  g_assert_cmpint (sigfm_keypoints_count (back), ==, 1);
+  legacy_v2 = sigfm_serialize_binary (back, &legacy_v2_len);
+  g_assert_nonnull (legacy_v2);
+  sigfm_free_info (back);
+  g_clear_pointer (&legacy, g_free);
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint32), FALSE, FALSE, FALSE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  g_assert_cmpint (sigfm_keypoints_count (back), ==, 1);
+  {
+    int converted_len = 0;
+    g_autofree guchar *converted = sigfm_serialize_binary (back, &converted_len);
+
+    g_assert_cmpmem (converted, converted_len, legacy_v2, legacy_v2_len);
+  }
+  sigfm_free_info (back);
+  g_clear_pointer (&legacy, g_free);
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint32), TRUE, FALSE, FALSE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  g_assert_cmpint (sigfm_keypoints_count (back), ==, 1);
+  {
+    int converted_len = 0;
+    g_autofree guchar *converted = sigfm_serialize_binary (back, &converted_len);
+
+    g_assert_cmpmem (converted, converted_len, legacy_v2, legacy_v2_len);
+  }
+  sigfm_free_info (back);
+  g_clear_pointer (&legacy, g_free);
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint64), TRUE, FALSE, FALSE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  g_assert_cmpint (sigfm_keypoints_count (back), ==, 1);
+  {
+    int converted_len = 0;
+    g_autofree guchar *converted = sigfm_serialize_binary (back, &converted_len);
+
+    g_assert_cmpmem (converted, converted_len, legacy_v2, legacy_v2_len);
+  }
+  sigfm_free_info (back);
+  g_clear_pointer (&legacy, g_free);
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint32), FALSE, TRUE, TRUE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  sigfm_free_info (back);
+  g_clear_pointer (&legacy, g_free);
+
+  legacy = make_legacy_sigfm_blob (sizeof (guint64), FALSE, TRUE, FALSE,
+                                   &legacy_len);
+  back = sigfm_deserialize_binary (legacy, legacy_len);
+  g_assert_nonnull (back);
+  sigfm_free_info (back);
+
+  /* Descriptor rows must match the keypoint count. */
+  malformed = g_malloc0 (len + 128 * sizeof (float));
+  memcpy (malformed, blob, len);
+  memcpy (malformed + 13, &one, sizeof (one));
+  g_assert_null (sigfm_deserialize_binary (malformed,
+                                          len + 128 * sizeof (float)));
+
+  trailing = g_malloc (len + 1);
+  memcpy (trailing, blob, len);
+  trailing[len] = 0;
+  g_assert_null (sigfm_deserialize_binary (trailing, len + 1));
+
+  /* An excessive keypoint count must be rejected before allocation. */
+  memset (blob + 5, 0xff, 4);
+  g_assert_null (sigfm_deserialize_binary (blob, len));
 
   /* Corrupt magic: must be rejected. */
   blob[0] = 'X';
@@ -235,6 +402,25 @@ test_sigfm_blob_roundtrip_and_magic (void)
 
   free (blob);
   sigfm_free_info (info);
+#else
+  g_test_skip ("SIGFM not built");
+#endif
+}
+
+static void
+test_sigfm_print_serialize_propagates_failure (void)
+{
+#ifdef HAVE_SIGFM
+  g_autoptr(FpPrint) print = make_print (FPI_PRINT_SIGFM);
+  g_autoptr(GError) error = NULL;
+  g_autofree guchar *data = NULL;
+  gsize length = 0;
+
+  g_ptr_array_add (print->prints, NULL);
+  g_assert_false (fp_print_serialize (print, &data, &length, &error));
+  g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+  g_assert_null (data);
+  g_assert_cmpuint (length, ==, 0);
 #else
   g_test_skip ("SIGFM not built");
 #endif
@@ -258,5 +444,7 @@ main (int argc, char *argv[])
                    test_sigfm_match_rejects_empty_probe);
   g_test_add_func ("/print/sigfm/blob_magic",
                    test_sigfm_blob_roundtrip_and_magic);
+  g_test_add_func ("/print/sigfm/serialize_propagates_failure",
+                   test_sigfm_print_serialize_propagates_failure);
   return g_test_run ();
 }

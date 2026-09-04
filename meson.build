@@ -161,7 +161,7 @@ drivers_info = {
     'secugen': {},
 
     # SIGFM driver (non-optional if OpenCV is available)
-    'fpc1022': { 'sigfm': true, 'endian_dependent': true, 'helper': ['openssl'], 'optional': not have_opencv },
+    'fpc1022': { 'sigfm': true, 'helper': ['openssl'], 'optional': not have_opencv },
 
     # SPI driver (non-optional if SPI is available)
     'elanspi': { 'spi': true, 'helper': ['udev'], 'optional': not have_spi },

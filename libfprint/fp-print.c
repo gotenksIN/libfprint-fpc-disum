@@ -695,6 +695,9 @@ fp_print_serialize (FpPrint *print,
   g_assert (data);
   g_assert (length);
 
+  *data = NULL;
+  *length = 0;
+
   g_variant_builder_add (&builder, "i", print->type);
   g_variant_builder_add (&builder, "s", print->driver);
   g_variant_builder_add (&builder, "s", print->device_id);
@@ -763,6 +766,17 @@ fp_print_serialize (FpPrint *print,
           SigfmImgInfo * info = g_ptr_array_index (print->prints, i);
           int slen;
           unsigned char * serialized = sigfm_serialize_binary (info, &slen);
+
+          if (serialized == NULL)
+            {
+              g_variant_builder_clear (&nested);
+              g_variant_builder_clear (&builder);
+              g_ptr_array_free (to_free, TRUE);
+              g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                           "Failed to serialize SIGFM print data");
+              return FALSE;
+            }
+
           g_variant_builder_add_value (
             &nested, g_variant_new_fixed_array (G_VARIANT_TYPE_BYTE,
                                                 serialized, slen, 1));
