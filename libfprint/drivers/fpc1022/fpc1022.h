@@ -36,21 +36,20 @@
 #define FPC1022_DATA_TIMEOUT 15000
 #define FPC1022_FINGER_TIMEOUT 600000      /* 10 min for finger wait */
 #define FPC1022_BULK_MAX_PKT 64
+#define FPC1022_EVT_HDR_SIZE 12
+#define FPC1022_TLS_RECORD_MAX_SIZE ((16 * 1024) + 2048)
+#define FPC1022_BULK_EVENT_MAX_SIZE (FPC1022_EVT_HDR_SIZE + FPC1022_TLS_RECORD_MAX_SIZE)
+#define FPC1022_BULK_ACCUM_SIZE (FPC1022_BULK_EVENT_MAX_SIZE + FPC1022_EP_IN_MAX_BUF_SIZE)
 
 /* Sensor image dimensions (FPC1022: 112x88, 1 byte per pixel) */
 #define FPC1022_IMG_WIDTH 112
 #define FPC1022_IMG_HEIGHT 88
-#define FPC1022_IMG_BPP 1
-#define FPC1022_IMG_SIZE (FPC1022_IMG_WIDTH * FPC1022_IMG_HEIGHT * FPC1022_IMG_BPP)
-#define FPC1022_IMG_PIXELS (FPC1022_IMG_WIDTH * FPC1022_IMG_HEIGHT)
+#define FPC1022_IMG_SIZE (FPC1022_IMG_WIDTH * FPC1022_IMG_HEIGHT)
 #define FPC1022_IMG_SCALE 2
 
 /* TLS inner message header size (cmdid + total_len + metadata) */
 #define FPC1022_TLS_MSG_HDR_SIZE 24
-
-/* USB control transfer request types */
-#define FPC1022_HOST_TO_DEVICE 0x40
-#define FPC1022_DEVICE_TO_HOST 0xC0
+#define FPC1022_TLS_MSG_MAX_SIZE (FPC1022_TLS_MSG_HDR_SIZE + FPC1022_IMG_SIZE)
 
 /* Commands (bRequest in USB control transfer) */
 #define FPC1022_CMD_INIT 0x01
@@ -61,13 +60,7 @@
 #define FPC1022_CMD_INDICATE_S_STATE 0x08
 #define FPC1022_CMD_GET_IMG 0x09
 #define FPC1022_CMD_GET_TLS_KEY 0x0B
-#define FPC1022_CMD_GET_KPI 0x0C
 #define FPC1022_CMD_FINGERPRINT_OFF 0x12
-#define FPC1022_CMD_END_ENROL 0x13
-#define FPC1022_CMD_REFRESH_SENSOR 0x20
-#define FPC1022_CMD_GET_FW_VERSION 0x30
-#define FPC1022_CMD_GET_HW_UNIQUE_ID 0x31
-#define FPC1022_CMD_FLUSH_KEYS 0x32
 #define FPC1022_CMD_GET_STATE 0x50
 
 /* Events (code field in bulk IN event header) */
@@ -80,8 +73,6 @@
 #define FPC1022_EVT_FINGER_UP 0x07
 #define FPC1022_EVT_IMAGE 0x08
 #define FPC1022_EVT_USB_LOGS 0x09
-#define FPC1022_EVT_TLS_KEY 0x0A
-#define FPC1022_EVT_REFRESH_SENSOR 0x20
 
 /* TLS key packet magic */
 #define FPC1022_TLS_KEY_MAGIC 0x0DEC0DED
@@ -94,7 +85,6 @@
 
 /* S-state values */
 #define FPC1022_S_STATE_S0 0x0010
-#define FPC1022_S_STATE_SX 0x0011
 
 /* Sensor init/arm/stop data (4-byte payloads for CMD_INIT and CMD_ARM) */
 #define FPC1022_INIT_DATA_SIZE 4
@@ -102,7 +92,7 @@
 #define FPC1022_ARM_OP_START 0x11
 #define FPC1022_ARM_OP_STOP 0x12
 
-/* SIGFM matching threshold (minimum number of consistent keypoint matches) */
+/* SIGFM matching threshold (minimum number of consistent geometric angle pairs) */
 #define FPC1022_SCORE_THRESHOLD 10
 
 /* Event header (received on bulk IN endpoint) - network byte order */
@@ -129,11 +119,9 @@ typedef struct __attribute__((packed))
 typedef enum {
   FPC1022_OPEN_INDICATE_S_STATE = 0,
   FPC1022_OPEN_GET_STATE,
-  FPC1022_OPEN_PARSE_STATE,
   FPC1022_OPEN_CMD_INIT,
   FPC1022_OPEN_WAIT_INIT_RESULT,
   FPC1022_OPEN_GET_TLS_KEY,
-  FPC1022_OPEN_PARSE_TLS_KEY,
   FPC1022_OPEN_TLS_INIT,
   FPC1022_OPEN_TLS_HANDSHAKE,
   FPC1022_OPEN_NUM_STATES,
@@ -145,7 +133,6 @@ typedef enum {
   FPC1022_CAPTURE_STOP_ABORT,
   FPC1022_CAPTURE_STOP_SESSION_OFF,
   FPC1022_CAPTURE_ARM_SENSOR,
-  FPC1022_CAPTURE_WAIT_FINGER,
   FPC1022_CAPTURE_GET_IMAGE,
   FPC1022_CAPTURE_RECV_IMAGE,
   FPC1022_CAPTURE_NUM_STATES,
@@ -167,7 +154,7 @@ struct _FpiDeviceFpc1022
   FpImageDevice parent;
 
   /* USB bulk event reception */
-  guint8 bulk_buf[FPC1022_EP_IN_MAX_BUF_SIZE];
+  guint8 bulk_buf[FPC1022_BULK_ACCUM_SIZE];
   gsize  bulk_recv_len;
   gsize  evt_total_len;
 
@@ -179,12 +166,7 @@ struct _FpiDeviceFpc1022
   BIO     *bio_in;       /* we write device data here, SSL reads from it */
   BIO     *bio_out;      /* SSL writes here, we read and send to device */
   gboolean tls_established;
-
-  /* Image buffer */
-  guint8  *img_buf;
-  gsize    img_recv_len;
-  gsize    img_expected_len;      /* actual payload size from TLS message header */
-  gboolean tls_in_image;         /* currently accumulating image payload from TLS */
+  GByteArray *tls_rx_buf;
 
   /* State */
   FpiSsm       *open_ssm;
