@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (defaults to selected ref)
+        description: Release tag (required when the selected ref is a branch)
         required: false
         type: string
 
@@ -19,7 +19,37 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="$INPUT_TAG"
+          if [[ -z "$tag" && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ -z "$tag" ]]; then
+            echo 'Specify a release tag when dispatching from a branch.' >&2
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.meta.outputs.tag }}
+      - name: Pin release commit
+        id: commit
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -37,19 +67,8 @@ jobs:
       DISTRO_FAMILY: ${{ matrix.family }}
     steps:
       - uses: actions/checkout@v7
-      - name: Set release tag
-        id: meta
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME}"
-          else
-            tag="${{ inputs.tag || '' }}"
-            if [[ -z "$tag" ]]; then
-              tag="${GITHUB_SHA::12}"
-            fi
-          fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - name: Build native package
         run: bash ".github/scripts/${{ matrix.script }}"
       - uses: actions/upload-artifact@v7
@@ -59,36 +78,25 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
-      - name: Set release tag
-        id: meta
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME}"
-          else
-            tag="${{ inputs.tag || '' }}"
-            if [[ -z "$tag" ]]; then
-              tag="${GITHUB_SHA::12}"
-            fi
-          fi
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-      - name: Validate tag and collect artifacts
+      - name: Collect artifacts
         run: |
           .github/scripts/collect-release.sh artifacts release
           test -f release/SHA256SUMS
       - name: Ensure release exists
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" \
@@ -100,7 +108,7 @@ jobs:
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           gh release upload "$RELEASE_TAG" release/* \
             --repo "$GITHUB_REPOSITORY"
