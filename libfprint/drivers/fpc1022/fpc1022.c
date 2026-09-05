@@ -1277,6 +1277,20 @@ fpc1022_process_tls_data (FpDevice *dev, FpiSsm *ssm)
 }
 
 static void
+fpc1022_capture_arm_cb (FpiUsbTransfer *transfer, FpDevice *dev,
+                        gpointer user_data, GError *error)
+{
+  if (error)
+    {
+      fpi_ssm_mark_failed (transfer->ssm, error);
+      return;
+    }
+
+  /* Resume buffered TLS messages before reading another USB event. */
+  fpc1022_process_tls_data (dev, transfer->ssm);
+}
+
+static void
 fpc1022_capture_ssm_run (FpiSsm *ssm, FpDevice *dev)
 {
   FpiDeviceFpc1022 *self = FPI_DEVICE_FPC1022 (dev);
@@ -1319,25 +1333,13 @@ fpc1022_capture_ssm_run (FpiSsm *ssm, FpDevice *dev)
     case FPC1022_CAPTURE_ARM_SENSOR:
       {
         fp_dbg ("Arming sensor for finger detection");
-        self->bulk_recv_len = 0;
-        self->evt_total_len = 0;
-
-        /* Submit bulk read BEFORE arm to catch events */
-        fpc1022_capture_continue (dev, ssm);
-
-        /* Send arm command (fire-and-forget, bulk cb handles transitions) */
         guint8 arm_data[FPC1022_INIT_DATA_SIZE] = { FPC1022_ARM_OP_START, 0x2f, 0x11, 0x17 };
-        FpiUsbTransfer *t = fpi_usb_transfer_new (dev);
-        fpi_usb_transfer_fill_control (t,
-                                       G_USB_DEVICE_DIRECTION_HOST_TO_DEVICE,
-                                       G_USB_DEVICE_REQUEST_TYPE_VENDOR,
-                                       G_USB_DEVICE_RECIPIENT_DEVICE,
-                                       FPC1022_CMD_ARM, 0x0001, 0,
-                                       FPC1022_INIT_DATA_SIZE);
-        memcpy (t->buffer, arm_data, FPC1022_INIT_DATA_SIZE);
-        fpi_usb_transfer_submit (t, FPC1022_CTRL_TIMEOUT,
-                                 fpc1022_get_transfer_cancellable (self, ssm),
-                                 fpc1022_ctrl_cmd_noop_cb, NULL);
+
+        /* Keep framing buffers for the lifetime of the TLS connection.
+         * Finish arming before buffered events can advance the capture SSM. */
+        fpc1022_send_ctrl_full (dev, ssm, FPC1022_CMD_ARM, 0x0001, 0,
+                                arm_data, sizeof (arm_data),
+                                fpc1022_capture_arm_cb);
       }
       break;
 
@@ -1348,7 +1350,7 @@ fpc1022_capture_ssm_run (FpiSsm *ssm, FpDevice *dev)
 
     case FPC1022_CAPTURE_RECV_IMAGE:
       fp_dbg ("Receiving image data via TLS");
-      fpc1022_capture_continue (dev, ssm);
+      fpc1022_process_tls_data (dev, ssm);
       break;
 
     default:
