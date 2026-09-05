@@ -3,6 +3,7 @@ Section: libs
 Priority: optional
 Maintainer: Omkar Chandorkar <gotenksIN@aospa.co>
 Build-Depends:
+ cmake,
  debhelper-compat (= 13),
  doctest-dev,
  gobject-introspection,

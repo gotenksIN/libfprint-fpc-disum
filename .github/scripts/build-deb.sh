@@ -17,7 +17,7 @@ DISTRO_ID="${ID}-${VERSION_ID}"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-  build-essential debhelper doctest-dev dpkg-dev git gobject-introspection \
+  build-essential cmake debhelper doctest-dev dpkg-dev git gobject-introspection \
   libcairo2-dev libglib2.0-dev libgudev-1.0-dev libgusb-dev libopencv-dev \
   libpixman-1-dev libssl-dev libudev-dev meson ninja-build pkgconf \
   python3 python3-cairo python3-gi udev umockdev
