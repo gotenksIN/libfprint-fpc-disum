@@ -91,9 +91,12 @@ FpImage *fpi_image_resize (FpImage *orig,
                            guint    h_factor);
 
 #ifdef HAVE_SIGFM
-SigfmImgInfo * fp_image_get_sigfm_info (FpImage *self);
-void           fp_image_extract_sigfm_info (FpImage            *self,
-                                            GCancellable       *cancellable,
-                                            GAsyncReadyCallback callback,
-                                            gpointer            user_data);
+SigfmImgInfo * fpi_image_get_sigfm_info (FpImage *self);
+void           fpi_image_extract_sigfm_info (FpImage            *self,
+                                             GCancellable       *cancellable,
+                                             GAsyncReadyCallback callback,
+                                             gpointer            user_data);
+gboolean       fpi_image_extract_sigfm_info_finish (FpImage      *self,
+                                                    GAsyncResult *result,
+                                                    GError      **error);
 #endif

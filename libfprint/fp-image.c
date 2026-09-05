@@ -171,17 +171,6 @@ typedef struct
   gboolean            image_changed;
 } DetectMinutiaeData;
 
-#ifdef HAVE_SIGFM
-typedef struct
-{
-  SigfmImgInfo      * sigfm_info;
-  guchar            * image;
-  gint                width;
-  gint                height;
-  GAsyncReadyCallback user_cb;
-} ExtractSigfmData;
-#endif
-
 static void
 fp_image_detect_minutiae_free (DetectMinutiaeData *data)
 {
@@ -195,37 +184,6 @@ fp_image_detect_minutiae_free (DetectMinutiaeData *data)
 }
 
 G_DEFINE_AUTOPTR_CLEANUP_FUNC (DetectMinutiaeData, fp_image_detect_minutiae_free)
-
-#ifdef HAVE_SIGFM
-static void
-fp_image_sigfm_extract_free (ExtractSigfmData * data)
-{
-  g_clear_pointer (&data->image, g_free);
-  g_clear_pointer (&data->sigfm_info, sigfm_free_info);
-  g_free (data);
-}
-
-static void
-fp_image_sigfm_extract_cb (GObject * source_object, GAsyncResult * res,
-                           gpointer user_data)
-{
-  GTask * task = G_TASK (res);
-  FpImage * image;
-  ExtractSigfmData * data = g_task_get_task_data (task);
-
-  if (!g_task_had_error (task))
-    {
-      image = FP_IMAGE (source_object);
-
-      g_clear_pointer (&image->data, g_free);
-      image->data = g_steal_pointer (&data->image);
-      image->sigfm_info = g_steal_pointer (&data->sigfm_info);
-    }
-
-  if (data->user_cb)
-    data->user_cb (source_object, res, user_data);
-}
-#endif
 
 static gboolean
 fp_image_detect_minutiae_nbis_finish (FpImage *self,
@@ -314,40 +272,6 @@ invert_colors (guint8 *data, gint width, gint height)
   for (i = 0; i < data_len; i++)
     data[i] = 0xff - data[i];
 }
-
-#ifdef HAVE_SIGFM
-static void
-fp_image_sigfm_extract_thread_func (GTask * task, void * src_obj,
-                                    void * task_data,
-                                    GCancellable * cancellable)
-{
-  ExtractSigfmData * data = task_data;
-  GTimer * timer = g_timer_new ();
-
-  data->sigfm_info = sigfm_extract (data->image, data->width, data->height);
-  g_timer_stop (timer);
-  fp_dbg ("sigfm extract completed in %f secs", g_timer_elapsed (timer, NULL));
-  g_timer_destroy (timer);
-
-  if (!data->sigfm_info)
-    {
-      fp_err ("extract sigfm info failed");
-      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED, "SIGFM scan failed");
-      g_object_unref (task);
-      return;
-    }
-
-  if (sigfm_keypoints_count (data->sigfm_info) < 25)
-    {
-      g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
-                               "No enough keypoints found");
-      g_object_unref (task);
-      return;
-    }
-  g_task_return_boolean (task, TRUE);
-  g_object_unref (task);
-}
-#endif
 
 static void
 fp_image_detect_minutiae_thread_func (GTask        *task,
@@ -527,51 +451,6 @@ fp_image_get_minutiae (FpImage *self)
   return self->minutiae;
 }
 
-#ifdef HAVE_SIGFM
-/**
- * fp_image_get_sigfm_info:
- * @self: A #FpImage
- *
- * Gets the SIGFM keypoints and descriptors for an image. This data must
- * not be modified or freed. You need to first extract keypoints and
- * descriptors using fp_image_extract_sigfm_info().
- *
- * Returns: (skip): SIGFM keypoints and descriptors
- */
-SigfmImgInfo *
-fp_image_get_sigfm_info (FpImage * self)
-{
-  return self->sigfm_info;
-}
-
-/*
- * fp_image_extract_sigfm_info:
- *
- * Extracts SIFT keypoints and descriptors from an image.
- * Completion is handled via fp_image_detect_minutiae_finish().
- */
-void
-fp_image_extract_sigfm_info (FpImage * self, GCancellable * cancellable,
-                             GAsyncReadyCallback callback, gpointer user_data)
-{
-  GTask * task;
-  ExtractSigfmData * data = g_new0 (ExtractSigfmData, 1);
-
-  task = g_task_new (self, cancellable, fp_image_sigfm_extract_cb, user_data);
-  g_task_set_source_tag (task, fp_image_extract_sigfm_info);
-
-  data->image = g_malloc (self->width * self->height);
-  memcpy (data->image, self->data, self->width * self->height);
-  data->width = self->width;
-  data->height = self->height;
-  data->user_cb = callback;
-
-  g_task_set_task_data (task, data,
-                        (GDestroyNotify) fp_image_sigfm_extract_free);
-  g_task_run_in_thread (task, fp_image_sigfm_extract_thread_func);
-}
-#endif
-
 /**
  * fp_image_detect_minutiae:
  * @self: A #FpImage
@@ -628,11 +507,6 @@ fp_image_detect_minutiae_finish (FpImage      *self,
 
   g_return_val_if_fail (FP_IS_IMAGE (self), FALSE);
   g_return_val_if_fail (g_task_is_valid (result, self), FALSE);
-
-#ifdef HAVE_SIGFM
-  if (g_task_get_source_tag (G_TASK (result)) == fp_image_extract_sigfm_info)
-    return g_task_propagate_boolean (G_TASK (result), error);
-#endif
 
   g_return_val_if_fail (g_task_get_source_tag (G_TASK (result)) ==
                         fp_image_detect_minutiae, FALSE);

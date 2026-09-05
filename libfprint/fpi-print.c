@@ -242,7 +242,7 @@ fpi_print_add_from_image (FpPrint *print,
 #ifdef HAVE_SIGFM
   else if (print->type == FPI_PRINT_SIGFM)
     {
-      SigfmImgInfo *info = fp_image_get_sigfm_info (image);
+      SigfmImgInfo *info = fpi_image_get_sigfm_info (image);
 
       if (!info)
         {
