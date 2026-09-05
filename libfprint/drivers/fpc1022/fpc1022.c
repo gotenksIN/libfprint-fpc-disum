@@ -1377,16 +1377,8 @@ fpc1022_capture_ssm_done (FpiSsm *ssm, FpDevice *dev, GError *error)
       return;
     }
 
-  /* Report finger off and restart capture loop */
+  /* The image-device layer requests the next scan after extraction finishes. */
   fpi_image_device_report_finger_status (FP_IMAGE_DEVICE (dev), FALSE);
-
-  if (self->deactivating)
-    return;
-
-  /* Start next capture cycle */
-  self->capture_ssm = fpi_ssm_new (dev, fpc1022_capture_ssm_run,
-                                   FPC1022_CAPTURE_NUM_STATES);
-  fpi_ssm_start (self->capture_ssm, fpc1022_capture_ssm_done);
 }
 
 /* ---- Deactivate SSM ---- */
@@ -1505,8 +1497,15 @@ fpc1022_activate (FpImageDevice *dev)
     }
 
   fpi_image_device_activate_complete (dev, NULL);
+}
 
-  if (self->deactivating)
+static void
+fpc1022_change_state (FpImageDevice *dev, FpiImageDeviceState state)
+{
+  FpiDeviceFpc1022 *self = FPI_DEVICE_FPC1022 (dev);
+
+  if (state != FPI_IMAGE_DEVICE_STATE_AWAIT_FINGER_ON ||
+      self->deactivating || self->capture_ssm)
     return;
 
   /* Start capture loop */
@@ -1556,6 +1555,7 @@ fpi_device_fpc1022_class_init (FpiDeviceFpc1022Class *klass)
   img_class->img_open = fpc1022_img_open;
   img_class->img_close = fpc1022_img_close;
   img_class->activate = fpc1022_activate;
+  img_class->change_state = fpc1022_change_state;
   img_class->deactivate = fpc1022_deactivate;
 
   img_class->img_width = FPC1022_IMG_WIDTH * FPC1022_IMG_SCALE;
