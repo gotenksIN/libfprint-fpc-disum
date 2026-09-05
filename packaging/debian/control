@@ -1,0 +1,39 @@
+Source: libfprint-fpc1022
+Section: libs
+Priority: optional
+Maintainer: Omkar Chandorkar <gotenksIN@aospa.co>
+Build-Depends:
+ cmake,
+ debhelper-compat (= 13),
+ doctest-dev,
+ gobject-introspection,
+ libcairo2-dev,
+ libglib2.0-dev,
+ libgudev-1.0-dev,
+ libgusb-dev,
+ libopencv-dev,
+ libpixman-1-dev,
+ libssl-dev,
+ libudev-dev,
+ meson,
+ ninja-build,
+ pkgconf,
+ python3,
+ python3-cairo,
+ python3-gi,
+ udev,
+ umockdev
+Standards-Version: 4.7.0
+Homepage: https://github.com/gotenksIN/libfprint-fpc-disum
+Rules-Requires-Root: no
+
+Package: libfprint-fpc1022
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Provides: libfprint-2-2 (= 1:1.94.100), libfprint-2-dev, gir1.2-fprint-2.0
+Conflicts: libfprint-2-2, libfprint-2-dev, gir1.2-fprint-2.0
+Replaces: libfprint-2-2, libfprint-2-dev, gir1.2-fprint-2.0
+Suggests: fprintd
+Description: libfprint build with FPC1022 (10a5:9200) support
+ This libfprint build includes all standard upstream drivers plus the
+ fpc1022 driver for Fingerprint Cards DISUM match-on-host sensors.

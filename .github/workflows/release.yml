@@ -1,0 +1,111 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (required when the selected ref is a branch)
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - name: Resolve release tag
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="$INPUT_TAG"
+          if [[ -z "$tag" && "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ -z "$tag" ]]; then
+            echo 'Specify a release tag when dispatching from a branch.' >&2
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.meta.outputs.tag }}
+      - name: Pin release commit
+        id: commit
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: ubuntu
+            image: ubuntu:26.04
+            script: build-deb.sh
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DISTRO_FAMILY: ${{ matrix.family }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - name: Build native package
+        run: bash ".github/scripts/${{ matrix.script }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.family }}
+          path: artifacts
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+      - name: Collect artifacts
+        run: |
+          .github/scripts/collect-release.sh artifacts release
+          test -f release/SHA256SUMS
+      - name: Ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "libfprint-fpc1022 $RELEASE_TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release upload "$RELEASE_TAG" release/* \
+            --repo "$GITHUB_REPOSITORY"

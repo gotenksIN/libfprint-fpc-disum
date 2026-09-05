@@ -1,0 +1,40 @@
+name: Build packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - family: ubuntu
+            image: ubuntu:26.04
+            script: build-deb.sh
+    container:
+      image: ${{ matrix.image }}
+    env:
+      DISTRO_FAMILY: ${{ matrix.family }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build native package
+        run: bash ".github/scripts/${{ matrix.script }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.family }}
+          path: artifacts
+          retention-days: 7
+          if-no-files-found: error

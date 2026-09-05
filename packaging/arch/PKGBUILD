@@ -1,0 +1,56 @@
+# Maintainer: Omkar Chandorkar <gotenksIN@aospa.co>
+
+pkgname=libfprint-fpc1022
+pkgver=1.94.100
+pkgrel=1
+pkgdesc='libfprint with FPC1022/Disum 10a5:9200 support'
+arch=('x86_64')
+url='https://github.com/gotenksIN/libfprint-fpc-disum'
+license=('LGPL-2.1-or-later')
+groups=('fprint')
+depends=(
+  'glib2'
+  'glibc'
+  'libgcc'
+  'libgudev'
+  'libgusb'
+  'libstdc++'
+  'opencv'
+  'openssl'
+  'pixman'
+)
+makedepends=(
+  'git'
+  'glib2-devel'
+  'gobject-introspection'
+  'meson'
+  'ninja'
+  'python-cairo'
+  'python-gobject'
+  'systemd'
+  'doctest'
+)
+checkdepends=('cairo' 'umockdev')
+optdepends=('fprintd: D-Bus daemon and PAM module for fingerprint readers')
+provides=('libfprint=1.94.100' 'libfprint-2.so')
+conflicts=('libfprint')
+source=("$pkgname::git+https://github.com/gotenksIN/libfprint-fpc-disum.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+build() {
+  arch-meson "$srcdir/$pkgname" build \
+    -D drivers=all \
+    -D doc=false \
+    -D installed-tests=false \
+    -D udev_hwdb=enabled
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs --no-suite libfprint:data
+  meson test -C build --print-errorlogs udev-hwdb
+}
+
+package() {
+  DESTDIR="$pkgdir" meson install -C build
+}
