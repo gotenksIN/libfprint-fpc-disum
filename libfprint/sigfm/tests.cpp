@@ -20,6 +20,8 @@
 #include<vector>
 
 namespace cv {
+bool operator==(const cv::KeyPoint& lhs, const cv::KeyPoint& rhs);
+
 bool operator==(const cv::KeyPoint& lhs, const cv::KeyPoint& rhs)
 {
     return lhs.angle == rhs.angle && lhs.class_id == rhs.class_id &&
@@ -33,16 +35,6 @@ namespace {
 bool comp_mats(const cv::Mat& lhs, const cv::Mat& rhs)
 {
     return std::equal(lhs.datastart, lhs.dataend, rhs.datastart, rhs.dataend);
-}
-
-std::string to_str(const cv::KeyPoint& k)
-{
-    std::stringstream s;
-    s << "angle: " << k.angle << ", class_id: " << k.class_id
-      << ", octave: " << k.octave << ", size: " << k.size
-      << ", reponse: " << k.response << ", ptx: " << k.pt.x
-      << ", pty: " << k.pt.y;
-    return s.str();
 }
 
 } // namespace
@@ -67,19 +59,13 @@ TEST_SUITE("binary")
         check_vec<float>({3, 2.4, 6.7});
     }
 
-    TEST_CASE("size_t can be stored and restored")
-    {
-        check_vec<std::size_t>({2, 5, 803, 900});
-    }
     TEST_CASE("number can be stored and restored")
     {
         check_vec<int>({5, 3, 10, 16, 24, 900});
     }
-    TEST_CASE("image can be stored and restored")
+    TEST_CASE("descriptor matrix can be stored and restored")
     {
-        cv::Mat input;
-        input.create(256, 256, CV_8UC1);
-        std::memcpy(input.data, embedded::capture_aes3500, 256 * 256);
+        cv::Mat input = cv::Mat::ones(2, bin::SIFT_DESCRIPTOR_COLS, CV_32F);
         bin::stream s;
         s << input;
 
@@ -121,7 +107,7 @@ TEST_SUITE("binary")
 
         cv::KeyPoint ptout;
         s >> ptout;
-        CHECK(to_str(pt) == to_str(ptout));
+        CHECK(pt == ptout);
     }
     TEST_CASE("sigfm img info can be stored and restored")
     {
@@ -155,6 +141,17 @@ TEST_SUITE("binary")
         sigfm_free_info(info2);
         free(bin_data);
         free(bin_data2);
+    }
+
+    TEST_CASE("invalid sigfm img info serialization fails")
+    {
+        SigfmImgInfo info;
+        info.keypoints.resize(bin::MAX_KEYPOINTS + 1);
+        int len = 7;
+
+        auto* data = sigfm_serialize_binary(&info, &len);
+        CHECK(data == nullptr);
+        CHECK(len == 0);
     }
 }
 

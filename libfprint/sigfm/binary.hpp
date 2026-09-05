@@ -9,7 +9,9 @@
 
 #pragma once
 
+#include <glib.h>
 #include "opencv2/core/mat.hpp"
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <stdexcept>
@@ -18,6 +20,9 @@
 
 namespace bin {
 using byte = unsigned char;
+
+constexpr std::size_t MAX_KEYPOINTS = 2048;
+constexpr int SIFT_DESCRIPTOR_COLS = 128;
 
 class stream;
 
@@ -71,25 +76,6 @@ public:
         return *this;
     }
 
-    template<typename T, std::enable_if_t<serializer<T>::value, bool> = true>
-    stream& serialize(const T& m, stream& out)
-    {
-        serializer<T>::serialize(m, out);
-        return out;
-    }
-
-    template<
-        typename Iter,
-        std::enable_if_t<std::is_same_v<typename std::iterator_traits<
-                                            std::decay_t<Iter>>::value_type,
-                                        byte>,
-                         bool> = true>
-    constexpr stream& read(Iter&& begin, Iter&& end)
-    {
-        const auto dist = std::distance(begin, end);
-        return stream::read(begin, dist);
-    }
-
     template<
         typename Iter,
         std::enable_if_t<std::is_same_v<typename std::iterator_traits<
@@ -98,41 +84,44 @@ public:
                          bool> = true>
     constexpr stream& read(Iter&& begin, std::size_t dist)
     {
-        if (dist > store_.size()) {
-            throw std::runtime_error{"trying to read too much from a stream. wanted: " + std::to_string(dist) + " available: " + std::to_string(store_.size())};
+        if (dist > size()) {
+            throw std::runtime_error{"trying to read too much from a stream. wanted: " + std::to_string(dist) + " available: " + std::to_string(size())};
         }
-        std::copy(store_.begin(), store_.begin() + dist, begin);
-        store_.erase(store_.begin(), store_.begin() + dist);
+        std::copy(store_.begin() + read_offset_,
+                  store_.begin() + read_offset_ + dist, begin);
+        read_offset_ += dist;
         return *this;
     }
-    byte* copy_buffer() const
-    {
-        byte* raw = static_cast<byte*>(malloc(store_.size()));
-        std::copy(store_.begin(), store_.end(), raw);
-        return raw;
-    }
-    std::size_t size() const { return store_.size(); }
+    const byte* data() const { return store_.data() + read_offset_; }
+    std::size_t size() const { return store_.size() - read_offset_; }
 
 private:
     std::vector<byte> store_;
+    std::size_t read_offset_ = 0;
 };
 
 template<typename T>
-struct serializer<T, std::enable_if_t<std::is_trivial_v<T>>> : public std::true_type {
+struct serializer<T, std::enable_if_t<std::is_arithmetic_v<T>>> : public std::true_type {
     static void serialize(T v, stream& out) {
         using seg_store = std::array<byte, sizeof(T)>;
         alignas(T) seg_store s = {};
         std::memcpy(s.data(), &v, sizeof(T));
+#if G_BYTE_ORDER == G_BIG_ENDIAN
+        std::reverse(s.begin(), s.end());
+#endif
         out.write(s.begin(), s.end());
     }
 };
 
 
 template<typename T>
-struct deserializer<T, std::enable_if_t<std::is_trivial_v<T>>> : public std::true_type {
+struct deserializer<T, std::enable_if_t<std::is_arithmetic_v<T>>> : public std::true_type {
     static T deserialize(stream& in) {
         alignas(T) std::array<byte, sizeof(T)> s = {};
         in.read(s.begin(), s.size());
+#if G_BYTE_ORDER == G_BIG_ENDIAN
+        std::reverse(s.begin(), s.end());
+#endif
         T v;
         std::memcpy(&v, s.data(), s.size());
         return v;
@@ -144,8 +133,20 @@ template<>
 struct serializer<cv::Mat> : public std::true_type {
     static void serialize(const cv::Mat& m, stream& out)
     {
-        out << m.type() << m.rows << m.cols;
-        out.write(m.datastart, m.dataend);
+        if (!m.empty() &&
+            (m.type() != CV_32F || m.cols != SIFT_DESCRIPTOR_COLS ||
+             m.rows > static_cast<int>(MAX_KEYPOINTS))) {
+            throw std::runtime_error{"invalid descriptor matrix"};
+        }
+
+        const auto type = static_cast<guint32>(m.empty() ? CV_32F : m.type());
+        const auto rows = static_cast<guint32>(m.rows);
+        const auto cols = static_cast<guint32>(m.empty() ? SIFT_DESCRIPTOR_COLS : m.cols);
+
+        out << type << rows << cols;
+        for (int row = 0; row < m.rows; row++)
+            for (int col = 0; col < m.cols; col++)
+                out << m.at<float>(row, col);
     }
 };
 
@@ -153,11 +154,27 @@ template<>
 struct deserializer<cv::Mat> : public std::true_type {
     static cv::Mat deserialize(stream& in)
     {
-        int rows, cols, type;
+        guint32 rows, cols, type;
         in >> type >> rows >> cols;
+
+        if (rows == 0) {
+            if (type != CV_32F || cols != SIFT_DESCRIPTOR_COLS) {
+                throw std::runtime_error{"invalid empty descriptor matrix"};
+            }
+            return {};
+        }
+
+        if (rows > MAX_KEYPOINTS || cols != SIFT_DESCRIPTOR_COLS ||
+            type != CV_32F ||
+            static_cast<std::size_t>(rows) * cols * sizeof(float) > in.size()) {
+            throw std::runtime_error{"invalid descriptor matrix"};
+        }
+
         cv::Mat m;
         m.create(rows, cols, type);
-        in.read(m.data, std::distance(m.datastart, m.dataend));
+        for (guint32 row = 0; row < rows; row++)
+            for (guint32 col = 0; col < cols; col++)
+                in >> m.at<float>(row, col);
         return m;
     }
 };
@@ -204,7 +221,10 @@ template<typename T>
 struct serializer<std::vector<T>, std::enable_if_t<serializer<T>::value>> : public std::true_type {
     static void serialize(const std::vector<T>& vs, stream& out)
     {
-        out << static_cast<std::size_t>(vs.size());
+        if (vs.size() > MAX_KEYPOINTS) {
+            throw std::runtime_error{"invalid vector size"};
+        }
+        out << static_cast<guint32>(vs.size());
         std::for_each(vs.begin(), vs.end(),
                       [&out](const auto& el) { out << el; });
     }
@@ -214,8 +234,11 @@ template<typename T>
 struct deserializer<std::vector<T>, std::enable_if_t<deserializer<T>::value>> : public std::true_type {
     static std::vector<T> deserialize(stream& in)
     {
-        std::size_t size;
+        guint32 size;
         in >> size;
+        if (size > MAX_KEYPOINTS || size > in.size()) {
+            throw std::runtime_error{"invalid vector size"};
+        }
         std::vector<T> vs;
         vs.reserve(size);
         for (std::size_t n = 0; n != size; ++n) {

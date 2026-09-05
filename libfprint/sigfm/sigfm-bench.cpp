@@ -338,7 +338,7 @@ int main(int argc, char** argv)
             /* Best score across the gallery, as fpi_print_sigfm_match does. */
             int best = 0;
             for (const auto& g : gal) {
-                const int s = sigfm_match_score(p.info, g.info);
+                const int s = sigfm_match_score(g.info, p.info);
                 cmp_count++;
                 if (s > best)
                     best = s;

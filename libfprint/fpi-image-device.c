@@ -251,12 +251,20 @@ fpi_image_device_minutiae_detected (GObject *source_object, GAsyncResult *res, g
   FpDevice *device = FP_DEVICE (self);
   FpImageDevicePrivate *priv;
   FpiDeviceAction action;
+  gboolean success;
 
   /* Note: We rely on the device to not disappear during an operation. */
   priv = fp_image_device_get_instance_private (FP_IMAGE_DEVICE (device));
   priv->minutiae_scan_active = FALSE;
 
-  if (!fp_image_detect_minutiae_finish (image, res, &error))
+#ifdef HAVE_SIGFM
+  if (priv->algorithm == FPI_PRINT_SIGFM)
+    success = fpi_image_extract_sigfm_info_finish (image, res, &error);
+  else
+#endif
+    success = fp_image_detect_minutiae_finish (image, res, &error);
+
+  if (!success)
     {
       /* Cancel operation . */
       if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
@@ -499,9 +507,9 @@ fpi_image_device_image_captured (FpImageDevice *self, FpImage *image)
 #ifdef HAVE_SIGFM
   if (priv->algorithm == FPI_PRINT_SIGFM)
     {
-      fp_image_extract_sigfm_info (image,
-                                   fpi_device_get_cancellable (FP_DEVICE (self)),
-                                   fpi_image_device_minutiae_detected, self);
+      fpi_image_extract_sigfm_info (image,
+                                    fpi_device_get_cancellable (FP_DEVICE (self)),
+                                    fpi_image_device_minutiae_detected, self);
     }
   else
 #endif
